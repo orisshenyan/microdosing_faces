@@ -1,0 +1,1304 @@
+---
+title: "Faces_Piloting_V2"
+author: "Oris Shenyan"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(binom)
+library(ggpubr)
+```
+
+
+# Individual 
+```{r}
+#Set up
+subnumber <- '1MP' #options are 9 and 14 for original, for recent RU02; FA03; KM04
+gender <- 'male' #options are male and female 
+age <- '25' #options are 26 and 26
+```
+
+Run this one if its recent piloting
+```{r}
+# Step 1: Read CSV files and add a 'Block' column
+data_list <- lapply(1:6, function(i) {
+  # Read each CSV file
+  df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Pilot_data/sub", subnumber, "_", gender, "_", age, "_trainingblock00", i, ".csv"))
+  # Add a 'Block' column based on the file name
+  df$Block <- paste("Block", i, sep="")
+  return(df)
+})
+combined_data <- bind_rows(data_list)
+
+# Step 1: Clean and transform data based on correctness
+training3 <- combined_data %>%
+  # Add a column indicating whether the response was correct
+  mutate(Correct_Response = case_when(
+    (Direction_Report == 1 & Face_Position < 0) ~ 1,  # Left response is correct for negative Face_Position
+    (Direction_Report == 2 & Face_Position > 0) ~ 1,  # Right response is correct for positive Face_Position
+    TRUE ~ 0  # Incorrect otherwise
+  )) 
+# Step 2: Logistic regression model
+model <- glm(Correct_Response ~ Opacity, family = binomial(logit), data = training3)
+
+# Extract model coefficients
+beta_0 <- coef(model)[1]
+beta_1 <- coef(model)[2]
+
+target_probability <- 0.65
+log_odds <- log(target_probability / (1 - target_probability))
+threshold <- (log_odds - beta_0) / beta_1
+
+#threshold <- -beta_0 / beta_1  # Calculate inflection point
+
+# Step 3: Summarise data for plotting
+summarised_data <- training3 %>%
+  group_by(Opacity) %>%
+  summarise(Proportion_Correct = sum(Correct_Response) / n())
+
+# Step 4: Plot results
+plot <- ggplot(summarised_data, aes(x = Opacity, y = Proportion_Correct)) +
+  geom_point(alpha = 0.7, size = 3) +  # Increase point size
+  stat_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE, color = "blue", size = 1.5) +  # Thicker smooth line
+  geom_vline(xintercept = threshold, linetype = "dashed", color = "red", size = 1) +  # Thicker dashed line
+  annotate(
+    "text", 
+    x = threshold, 
+    y = 0.5, 
+    label = paste("Threshold:", round(threshold, 2)), 
+    hjust = -0.2, 
+    vjust = -0.5, 
+    color = "red", 
+    size = 5  # Increase annotation text size
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold"),  # Bigger and bold title
+    plot.subtitle = element_text(size = 14),  # Bigger subtitle
+    axis.title = element_text(size = 14),  # Bigger axis titles
+    axis.text = element_text(size = 12),  # Bigger axis text
+    legend.text = element_text(size = 12),  # Bigger legend text (if applicable)
+    legend.title = element_text(size = 14)  # Bigger legend title (if applicable)
+  ) +
+  labs(
+    title = paste0("Participant ", subnumber, " (", gender, ", ", age, "): ", "Faces accurately identified \n vs opacity"),
+    x = "Opacity level",
+    y = "Accuracy of faces identified",
+    subtitle = "65% threshold marked by red dashed line"
+  )
+
+# Save plot
+ggsave(
+  filename = paste0("Pilot3_plots/Individual/opacityplot_training3_", subnumber, "_", age, "_", gender, ".png"),
+  plot = plot, 
+  device = "png"
+)
+
+# Display plot
+plot
+```
+#Find group estimates
+```{r}
+# Load necessary package
+library(lme4)
+
+# Fit a mixed-effects logistic regression model
+model_ml <- glmer(Correct_Response ~ Opacity + (1 | subnumber), 
+                  family = binomial, 
+                  data = data)
+
+# View the model summary
+summary(model_ml)
+
+# Load necessary package for bootstrapping
+library(boot)
+
+# Function to calculate threshold from model coefficients
+get_threshold <- function(data, indices) {
+  # Resample the data (bootstrap resampling)
+  resampled_data <- data[indices, ]
+  
+  # Fit the model on resampled data
+  model_resampled <- glmer(Correct_Response ~ Opacity + (1 | subnumber), 
+                           family = binomial(link = "logit"), 
+                           control = glmerControl(optimizer = "bobyqa"),
+                           data = resampled_data)
+  
+  fixed_effects <- fixef(model_resampled)
+  
+  # Extract coefficients from the model
+beta_0 <- fixed_effects[1]  # Intercept
+beta_1 <- fixed_effects[2]  # Opacity coefficient
+  
+  # Calculate the log odds for a 65% probability
+  target_probability <- 0.65
+  log_odds <- log(target_probability / (1 - target_probability))
+  
+  # Calculate threshold (opacity level corresponding to 65% correct response)
+  threshold <- (log_odds - beta_0) / beta_1
+  return(threshold)
+}
+
+# Run the bootstrap
+set.seed(123)  # For reproducibility
+bootstrap_results <- boot(data = data, statistic = get_threshold, R = 1000)
+
+# View the bootstrap results
+bootstrap_results
+
+# Calculate the 95% confidence interval for the threshold
+ci <- boot.ci(bootstrap_results, type = "perc")
+print(ci)
+
+
+```
+
+
+
+
+## Confidence
+
+
+```{r}
+# Assuming the new data frame is already loaded into `combined_data`
+# Aggregate data to get counts of each confidence level for each opacity
+bar_data <- combined_data %>%
+  filter(Face_response == 1) %>%  # Use `Face_response` instead of `Realface_response`
+  group_by(Opacity, Face_confidence) %>%  # Use `Face_confidence` instead of `Realface_confidence`
+  summarise(Count = n(), .groups = 'drop')
+
+# Create the stacked bar chart for the individual participant
+bar_plot <- ggplot(bar_data, aes(x = factor(Opacity), y = Count, fill = factor(Face_confidence))) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "plasma", name = "Confidence Level") +
+  labs(title = paste0("Participant ", subnumber, " (", gender, ', ', age, "): ",
+                      "Confidence Across Opacity Levels"),
+       x = "Opacity",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Save the plot
+ggsave(filename = paste0("Pilot2_output/Individual/stacked_bar_confidence_", subnumber, "_", age, "_", gender, ".png"), plot = bar_plot, device = "png")
+bar_plot
+
+```
+
+
+## Group analysis
+
+```{r}
+# Define a list of participants for group data analysis
+participant_list <- list(
+  list(subnumber = 'RU02', gender = 'female', age = '26'),
+  list(subnumber = 'FA03', gender = 'female', age = '48'),
+  list(subnumber = 'KM04', gender = 'female', age = '21'),
+    list(subnumber = 'GH05', gender = 'male', age = '33')
+)
+
+data_list <- list()
+
+# Loop through participants to load data
+for (participant in participant_list) {
+  subnumber <- participant$subnumber
+  gender <- participant$gender
+  age <- participant$age
+  
+  participant_data <- lapply(0:6, function(i) {
+    df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/data/sub", subnumber, "_", gender, "_", age, "_trainingblock00", i, ".csv"))
+    df$Block <- paste("Block", i, sep="")
+    df$subnumber <- subnumber  # Add participant identifier
+    return(df)
+  })
+  
+  # Add each participant's data to the main list
+  data_list <- c(data_list, participant_data)
+}
+
+# Combine all participants' data into one data frame
+combined_data <- bind_rows(data_list)
+
+```
+
+##Opacity / proportion identified
+```{r}
+# Step 1: Clean and transform data for group-level analysis
+data <- combined_data %>%
+  # Add a column indicating whether the response was correct
+  mutate(Correct_Response = case_when(
+    (Direction_Report == 1 & Face_Position < 0) ~ 1,  # Left response is correct for negative Face_Position
+    (Direction_Report == 2 & Face_Position > 0) ~ 1,  # Right response is correct for positive Face_Position
+    TRUE ~ 0  # Incorrect otherwise
+  )) %>%
+  mutate(Correct_Response = as.numeric(Correct_Response)) %>%
+  mutate(subnumber = as.factor(subnumber))
+```
+
+```{r}
+library(quickpsy)
+# Fit the psychometric curve
+fit <- quickpsy(
+  data,
+  Opacity,                # Independent variable
+  Correct_Response,       # Binary response
+  grouping = .(subnumber)       # Group by participant         
+)
+print(fit)
+```
+
+
+```{r}
+# Extract the averages and thresholds data from fit
+averages <- fit$averages
+curves <- fit$curves
+thresholds <- fit$thresholds
+
+# Format the labels using the 'thre' column from thresholds (inflection points)
+thresholds <- thresholds %>%
+  mutate(label = round(thre, 2))  # Round the 'thre' values for cleaner labels
+
+# Ensure the 'subnumber' variable is a factor in both data frames
+averages$subnumber <- as.factor(averages$subnumber)
+thresholds$subnumber <- as.factor(thresholds$subnumber)
+
+# Create the plot using ggplot with color by 'ecc' or 'subnumber'
+plot <- ggplot() +
+  # Plot points from fit$averages (phase vs prob) with color grouped by 'ecc'
+  geom_point(data = fit$averages, 
+             aes(x = Opacity, y = prob, color = factor(subnumber))) +
+  
+  # Plot lines from fit$curves (x vs y) with color grouped by 'ecc'
+  #geom_line(data = fit$curves, 
+            #aes(x = x, y = y, color = factor(subnumber))) +
+  
+  # Plot lines from fit$curves (x vs y) with color grouped by 'subnumber'
+  geom_line(data = curves, 
+            aes(x = x, y = y, color = subnumber)) +
+  
+  # Add dashed vertical lines for thresholds (from fit$thresholds) with geom_linerange
+  geom_linerange(data = thresholds, 
+                 aes(x = thre, color = subnumber, ymin = 0, ymax = prob), 
+                 linetype = "dashed") +
+  
+  # Add dashed lines for thresholds (from fit$thresholds)
+  #geom_vline(data = thresholds, aes(xintercept = thre, colour = subnumber), linetype = "dashed", alpha = 0.5) +
+  
+  geom_label(data = thresholds,
+                         aes(x = thre, y = prob, label = label, fill = factor(subnumber)),
+             alpha=0.5,
+             hjust = .2,
+             colour = "white",
+            show.legend = FALSE) +
+
+  # Adjust y-axis limit to ensure visibility
+  ylim(0, 1.25) +
+  # Improve the theme for visualization
+  theme_minimal() + 
+  labs(
+    x = "Opacity", 
+    y = "Accuracy of identifying direction of face", 
+    color = "Subject"  # Label for the color legend
+  ) +
+  
+  # Remove the legend for labels and adjust the position of the overall plot
+  theme(legend.position = "bottom")
+
+plot + coord_cartesian(xlim = c(0.1, 0.7), ylim = c(0.25, 1)) 
+```
+
+
+## confidence
+```{r}
+# Aggregate data to get counts of each confidence level for each opacity
+individual_bar_data <- combined_data %>%
+  filter(Face_response == 1) %>%
+  group_by(Opacity, Face_confidence, subnumber) %>%
+  summarise(Count = n(), .groups = 'drop')
+
+# Group-Level Data Aggregation
+group_bar_data <- combined_data %>%
+  filter(Face_response == 1) %>%
+  group_by(Opacity, Face_confidence) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(subnumber = "Group")  # Placeholder for faceting
+
+# Combine individual and group data
+combined_bar_data <- bind_rows(individual_bar_data, group_bar_data)
+
+# Create the stacked bar plot with facets
+combined_bar_plot <- ggplot(combined_bar_data, aes(x = factor(Opacity), y = Count, fill = factor(Face_confidence))) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_wrap(~subnumber, scales = "free_y", nrow = 2) +  # Facet by participant and group
+  scale_fill_viridis_d(option = "plasma", name = "Confidence Level") +
+  labs(title = "Confidence Across opacity Levels (Individual vs Group)",
+       x = "Opacity",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Save the plot
+ggsave(filename = "Pilot2_output/Group/barplot_combined_confidence_opacity.png", plot = combined_bar_plot, device = "png")
+combined_bar_plot
+
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(viridis)
+
+# Aggregate data to get counts of each confidence level for each opacity and participant
+individual_bar_data <- combined_data %>%
+  filter(Face_response == 1) %>%
+  group_by(Opacity, Face_confidence, subnumber) %>%
+  summarise(Count = n(), .groups = 'drop')
+
+# Compute total trials per opacity level and participant
+total_trials <- combined_data %>%
+  group_by(Opacity, subnumber) %>%
+  summarise(TotalTrials = n(), .groups = 'drop')
+
+# Compute non-response trials (Face_confidence = 0) per opacity level and participant
+non_response_trials <- combined_data %>%
+  filter(Face_confidence == 0) %>%
+  group_by(Opacity, subnumber) %>%
+  summarise(NonResponseTrials = n(), .groups = 'drop')
+
+# Merge total trials and non-response trials for labels
+label_data <- total_trials %>%
+  left_join(non_response_trials, by = c("Opacity", "subnumber")) %>%
+  mutate(NonResponseTrials = ifelse(is.na(NonResponseTrials), 0, NonResponseTrials))  # Handle NAs
+
+# Calculate the maximum y-value for proper label positioning
+label_data <- label_data %>%
+  left_join(individual_bar_data %>% group_by(Opacity, subnumber) %>%
+              summarise(MaxY = sum(Count), .groups = 'drop'), by = c("Opacity", "subnumber"))
+
+# Create the stacked bar plot with facets (one per participant)
+individual_bar_plot <- ggplot(individual_bar_data, aes(x = factor(Opacity), y = Count, fill = factor(Face_confidence))) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_label(data = label_data, aes(x = factor(Opacity), y = MaxY + 1, 
+                                    label = paste0("Trials: ", TotalTrials)), 
+             inherit.aes = FALSE, fill = "white", color = "black", vjust = -0.3, size = 2, alpha = 0.5) +
+    geom_label(data = label_data, aes(x = factor(Opacity), y = MaxY + 3, 
+                                    label = paste0("NR: ", NonResponseTrials)), 
+             inherit.aes = FALSE, fill = "white", color = "black", vjust = 7, size = 2, alpha = 0.5) +
+  facet_wrap(~subnumber, scales = "free_y", nrow = 2) +  # Facet by participant only
+  scale_fill_viridis_d(option = "plasma", name = "Confidence Level") +
+  labs(title = "Confidence Across Opacity Levels (Individual Participants)", 
+       x = "Opacity", 
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Save the plot
+ggsave(filename = "Pilot3_plots/training_confidence_opacity.png", 
+       plot = individual_bar_plot, device = "png")
+
+individual_bar_plot
+
+```
+
+```{r}
+# Load necessary library
+library(dplyr)
+
+# Define a list of participants for group data analysis
+participant_list <- list(
+  #list(subnumber = 'MN01', gender = 'male', age = '24')#,
+  list(subnumber = '1MP', gender = 'male', age = '25')#,
+  #list(subnumber = 'FA03', gender = 'female', age = '48'),
+  #list(subnumber = 'KM04', gender = 'female', age = '21')#,
+  #list(subnumber = 'GH05', gender = 'male', age = '33')
+  
+)
+
+data_list <- list()
+
+# Loop through participants to load data
+for (participant in participant_list) {
+  subnumber <- participant$subnumber
+  gender <- participant$gender
+  age <- participant$age
+  
+  # Load the participant's block data
+  participant_data <- lapply(0:6, function(i) {
+    df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Pilot_data/sub", 
+                          subnumber, "_", gender, "_", age, "_mainblock00", i, ".csv"))
+    df$Block <- paste("Block", sprintf("%03d", i), sep="")
+    df$subnumber <- subnumber  # Add participant identifier
+    return(df)
+  })
+  
+  # Combine all blocks into one data frame for the participant
+  participant_data <- bind_rows(participant_data)
+  
+  # Load the participant's final_opac file
+  opac_file <- paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Pilot_data/sub", 
+                      subnumber, "_", gender, "_", age, "_final_opac.csv")
+  final_opac <- read.csv(opac_file, header=FALSE, skip=1) # Skip the first row
+  
+  # Add Block and Opacity columns to the final_opac data
+  opac_data <- data.frame(
+    Block = paste0("Block", sprintf("%03d", 0:6)),
+    Opacity = final_opac$V1
+  )
+  
+  # Merge the block data with the opacity data
+  participant_data <- merge(participant_data, opac_data, by = "Block", all.x = TRUE)
+  
+  # Add each participant's data to the main list
+  data_list <- c(data_list, list(participant_data))
+}
+
+# Combine all participants' data into one data frame
+combined_data <- bind_rows(data_list)
+
+
+```
+
+Perception plot single
+
+```{r}
+
+
+  subnumber <- "1MP"
+  gender <- "male"
+  age <- "25"
+  
+  # Load the participant's block data
+  participant_data <- lapply(0:6, function(i) {
+    df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Pilot_data/sub", 
+                          subnumber, "_", gender, "_", age, "_mainblock00", i, ".csv"))
+    df$Block <- paste("Block", sprintf("%03d", i), sep="")
+    df$subnumber <- subnumber  # Add participant identifier
+    return(df)
+  })
+  
+  # Combine all blocks into one data frame for the participant
+  participant_data <- bind_rows(participant_data)
+  
+  # Load the participant's final_opac file
+  opac_file <- paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Pilot_data/sub", 
+                      subnumber, "_", gender, "_", age, "_final_opac.csv")
+  final_opac <- read.csv(opac_file, header=FALSE, skip=1) # Skip the first row
+  
+  # Add Block and Opacity columns to the final_opac data
+  opac_data <- data.frame(
+    Block = paste0("Block", sprintf("%03d", 0:6)),
+    Opacity = final_opac$V1
+  )
+  
+  # Merge the block data with the opacity data
+  participant_data <- merge(participant_data, opac_data, by = "Block", all.x = TRUE)
+
+
+# Convert relevant columns to numeric where needed
+cleaned_data <- participant_data %>%
+  mutate(
+    Realface_response = as.numeric(Realface_response),
+    Realface_confidence = as.numeric(Realface_confidence),
+    Hallucination_response = as.numeric(Hallucination_response),
+    Hallucination_confidence = as.numeric(Hallucination_confidence),
+    Face_Position = as.numeric(Face_Position),
+    Noise_Number = as.numeric(Noise_Number),
+    Face_Size = as.numeric(Face_Size),
+    Opacity = as.numeric(Opacity)
+  )
+
+missed_perceptions <- cleaned_data %>%
+  filter(Realface_response == 0) %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(Count = n()) %>%
+  mutate(Perception_Type = "Missed")
+
+correct_perceptions <- cleaned_data %>%
+  filter(Realface_response == 1) %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(Count = n()) %>%
+  mutate(Perception_Type = "Correct")
+
+false_perceptions <- cleaned_data %>%
+  filter(Hallucination_response == 1) %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(Count = n()) %>%
+  mutate(Perception_Type = "False")
+
+
+
+# Join the three data frames by Opacity and subnumber
+joined_data <- bind_rows(missed_perceptions, correct_perceptions, false_perceptions)
+View(joined_data)
+
+perception_y_max <- max(joined_data$Count, na.rm = TRUE)
+
+# View the resulting joined data
+head(joined_data)
+
+
+proportions <- joined_data %>%
+  group_by(Block, Perception_Type, Opacity) %>%
+  summarise(Count = sum(Count), .groups = 'drop') %>%
+  mutate(Percentage = case_when(
+    Perception_Type %in% c("Missed", "Correct") ~ Count / 15 * 100,  # Percent for Missed and Correct (out of 15)
+    Perception_Type == "False" ~ Count / 45 * 100))
+
+  # Create perception plot
+  ggplot(joined_data, aes(x = as.factor(Opacity), y = Count, fill = Perception_Type)) +
+    geom_bar(stat = "identity", position = "dodge") +
+      annotate("text", 
+           x = 1, y = 100, label = "Percentages given are percentages of total eligible trials within a category\nrather than total trials, i.e., percentage of face present trials for correct and missed", 
+           size = 20, hjust = 5, vjust = 5, 
+           color = "black", fontface = "italic", 
+           lineheight = 1.2) + 
+geom_text(
+    data = proportions,
+    aes(
+      label = ifelse(!is.na(Percentage), paste0(round(Percentage, 1), "%"), ""),
+      y = Count + 0.05 * perception_y_max  # Adjust label position slightly above the bar
+    ),
+    position = position_dodge(width = 0.9),
+    vjust = 0,
+    size = 3,
+    color = "black",
+    fill = "white",
+    alpha = 0.5
+  ) +
+    labs(
+      title = paste0("Perceptions (correct/false/missed) by opacity, subject ", subnumber, ", ", gender, ", ", age),
+      x = "Opacity",
+      y = "Count",
+      fill = "Perception Type"
+    ) +
+      facet_wrap(
+  ~Block, 
+  scales = "free", 
+  labeller = as_labeller(function(x) {
+    block_number <- as.numeric(gsub("Block", "", x)) + 1
+    paste("Block", block_number)
+  })
+) +
+    scale_fill_brewer(palette = "Set2") + 
+    ylim(0, perception_y_max+2) +
+    theme_minimal()
+```
+
+
+Single confidence plot
+```{r}
+
+# Generate confidence data frames with error bars
+  confidence_correct <- cleaned_data %>%
+    filter(Realface_response == 1) %>%
+    group_by(subnumber, Opacity, Block) %>%
+    summarise(Mean_Confidence = mean(Realface_confidence, na.rm = TRUE), 
+              SE = sd(Realface_confidence, na.rm = TRUE) / sqrt(n())) %>%
+    mutate(Perception_Type = "Correct")
+  
+  confidence_false <- cleaned_data %>%
+    filter(Hallucination_response == 1) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Mean_Confidence = mean(Hallucination_confidence, na.rm = TRUE), 
+              SE = sd(Hallucination_confidence, na.rm = TRUE) / sqrt(n())) %>%
+    mutate(Perception_Type = "False")
+  
+  mean_confidence <- bind_rows(confidence_correct, confidence_false)
+  
+
+# Update the y-axis maximum to account for error bars
+confidence_y_max <- max(mean_confidence$Mean_Confidence + mean_confidence$SE, na.rm = TRUE)
+
+# Create the main plot with error bars
+confidenceplot <- ggplot(mean_confidence, aes(x = as.factor(Opacity), y = Mean_Confidence, fill = Perception_Type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.6) +
+  geom_errorbar(
+    aes(ymin = Mean_Confidence - SE, ymax = Mean_Confidence + SE),
+    position = position_dodge(width = 0.8),
+    width = 0.25
+  ) +
+  facet_wrap(
+    ~Block,
+    scales = "free",
+    labeller = as_labeller(function(x) {
+      block_number <- as.numeric(gsub("Block", "", x)) + 1
+      paste("Block", block_number)
+    })
+  ) +
+  labs(
+    title = paste0("Mean confidence ratings by opacity and perception type \n (correct perception/false perception (hallucination), subject ", subnumber),
+    x = "Opacity",
+    y = "Mean confidence rating"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  ylim(0, confidence_y_max) +  # Adjust y-axis limit
+  labs(fill = "Perception type") + 
+  theme_minimal()
+
+max_hallucinations <- cleaned_data %>%
+  filter(Hallucination_response == 1) %>%
+  group_by(Opacity) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  summarise(Max_Hallucinations = max(Count, na.rm = TRUE)) %>%
+  pull(Max_Hallucinations)
+```
+
+```{r}
+false_alarm_distribution <- cleaned_data %>%
+  filter(Hallucination_response == 1) %>%
+  ggplot(aes(x = as.factor(Opacity), fill = as.factor(Hallucination_confidence))) +  # Ensure confidence is treated as a factor
+  geom_bar(position = "stack", width = 0.7) +
+  facet_wrap(~Block) + # Stack the bars for each confidence level
+  labs(
+    title = "Distribution of confidence in false alarms by opacity level",
+    x = "Opacity",
+    y = "Count of Confidence Responses"
+  ) +
+  scale_fill_manual(
+    values = c("NA" = "grey", 
+               "1" = "#66c2a5", 
+               "2" = "#fc8d62", 
+               "3" = "#8da0cb", 
+               "4" = "#e78ac3")  # Custom colors for each confidence level, with grey for NAs
+  ) +  # Color for the different confidence values
+  labs(fill = "Confidence Level") +
+  theme_minimal()
+
+
+y_max <- ggplot_build(false_alarm_distribution)$layout$panel_scales_y[[1]]$range$range[2]  # Get the max y value
+
+# Add label for total number of high-confidence false percepts (confidence 3 or 4), position it dynamically
+false_alarm_distribution <- false_alarm_distribution +
+  annotate("text", 
+           x = 1, 
+           y = y_max - 1,  # Position the text dynamically 5 units below the max y value
+           label = paste("High confidence \n FA (3 or 4): \n", 
+                         sum(cleaned_data$Hallucination_confidence %in% c(3, 4) & cleaned_data$Hallucination_response == 1)),
+           size = 3, color = "black", hjust = 0)
+
+
+
+# Combine the plots into a single figure
+library(ggpubr)
+final_plot <- ggarrange(
+  confidenceplot,
+  false_alarm_distribution,
+  labels = c("A", "B"),
+  ncol = 2,
+  nrow = 1
+)
+
+final_plot
+
+  # Save the combined plot
+  output_file <- paste0("Pilot3_plots/", subnumber, "_combined_plot.png")
+  ggsave(
+    filename = output_file,
+    plot = final_plot,
+    width = 14, height = 7
+  )
+  
+
+```
+```{r}
+getwd()
+```
+
+
+#Loop for perceptions plots
+```{r}
+# List of participants
+subjects <- list(
+  #list(subnumber = "MN01", gender = "male", age = "24")#,
+  #list(subnumber = "RU02", gender = "female", age = "26"))
+  list(subnumber = "1MP", gender = "male", age = "25"))
+  #list(subnumber = "KM04", gender = "female", age = "21"),
+  #list(subnumber = "GH05", gender = "male", age = "33")
+#)
+
+# Initialize a list to store results for all participants
+all_joined_data <- list()
+
+# Loop through each participant
+for (subject in subjects) {
+  subnumber <- subject$subnumber
+  gender <- subject$gender
+  age <- subject$age
+  
+  # Load the participant's block data
+  participant_data <- lapply(0:6, function(i) {
+    df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Pilot_data/sub", 
+                          subnumber, "_", gender, "_", age, "_mainblock00", i, ".csv"))
+    df$Block <- paste("Block", sprintf("%03d", i), sep="")
+    df$subnumber <- subnumber  # Add participant identifier
+    return(df)
+  })
+  
+  # Combine all blocks into one data frame for the participant
+  participant_data <- bind_rows(participant_data)
+  
+  # Load the participant's final_opac file
+  opac_file <- paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Pilot_data/sub", 
+                      subnumber, "_", gender, "_", age, "_final_opac.csv")
+  final_opac <- read.csv(opac_file, header=FALSE, skip=1) # Skip the first row
+  
+  # Add Block and Opacity columns to the final_opac data
+  opac_data <- data.frame(
+    Block = paste0("Block", sprintf("%03d", 0:6)),
+    Opacity = final_opac$V1
+  )
+  
+  # Merge the block data with the opacity data
+  participant_data <- merge(participant_data, opac_data, by = "Block", all.x = TRUE)
+  
+  # Convert relevant columns to numeric where needed
+  cleaned_data <- participant_data %>%
+    mutate(
+      Realface_response = as.numeric(Realface_response),
+      Realface_confidence = as.numeric(Realface_confidence),
+      Hallucination_response = as.numeric(Hallucination_response),
+      Hallucination_confidence = as.numeric(Hallucination_confidence),
+      Face_Position = as.numeric(Face_Position),
+      Noise_Number = as.numeric(Noise_Number),
+      Face_Size = as.numeric(Face_Size),
+      Opacity = as.numeric(Opacity)
+    )
+  
+  # Create perception data frames
+  missed_perceptions <- cleaned_data %>%
+    filter(Realface_response == 0) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Count = n()) %>%
+    mutate(Perception_Type = "Missed")
+  
+  correct_perceptions <- cleaned_data %>%
+    filter(Realface_response == 1) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Count = n()) %>%
+    mutate(Perception_Type = "Correct")
+  
+  false_perceptions <- cleaned_data %>%
+    filter(Hallucination_response == 1) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Count = n()) %>%
+    mutate(Perception_Type = "False")
+  
+  # Combine perception data
+  joined_data <- bind_rows(missed_perceptions, correct_perceptions, false_perceptions)
+  
+  # Add to the list of all participants' data
+  all_joined_data[[subnumber]] <- joined_data
+  
+  # Optionally, generate the plot for each participant
+  perception_y_max <- max(joined_data$Count, na.rm = TRUE)
+  proportions <- joined_data %>%
+    group_by(Block, Perception_Type, Opacity) %>%
+    summarise(Count = sum(Count), .groups = 'drop') %>%
+    mutate(Percentage = case_when(
+      Perception_Type %in% c("Missed", "Correct") ~ Count / 30 * 100,
+      Perception_Type == "False" ~ Count / 90 * 100
+    ))
+  
+  perception_plot <- ggplot(joined_data, aes(x = as.factor(Opacity), y = Count, fill = Perception_Type)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(
+      data = proportions,
+      aes(
+        label = ifelse(!is.na(Percentage), paste0(round(Percentage, 1), "%"), ""),
+        y = Count + 0.05 * perception_y_max
+      ),
+      position = position_dodge(width = 0.9),
+      vjust = 0,
+      size = 3,
+      color = "black"
+    ) +
+    labs(
+      title = paste0("Perceptions (correct/false/missed) by opacity, subject ", subnumber, ", ", gender, ", ", age),
+      x = "Opacity",
+      y = "Count",
+      fill = "Perception Type"
+    ) +
+    facet_wrap(
+      ~Block,
+      scales = "free",
+      labeller = as_labeller(function(x) {
+        block_number <- as.numeric(gsub("Block", "", x)) + 1
+        paste("Block", block_number)
+      })
+    ) +
+    scale_fill_brewer(palette = "Set2") +
+    ylim(0, perception_y_max + 2) +
+    theme_minimal()
+  
+  # Save the plot as a PNG file
+output_file <- paste0("Pilot3_plots/", subnumber, "_perceptions_plot.png")
+  ggsave(output_file, plot = perception_plot, width = 10, height = 6)
+}
+
+
+
+
+```
+
+
+
+
+
+loop over all
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+
+#perps
+participant_list <- list(
+  list(subnumber = "MN01", gender = "male", age = "24"),
+  list(subnumber = "RU02", gender = "female", age = "26"),
+  list(subnumber = "FA03", gender = "female", age = "48"),
+  list(subnumber = "KM04", gender = "female", age = "21"),
+  list(subnumber = "GH05", gender = "male", age = "33")
+)
+
+# define plots directory
+output_dir <- "~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/Face_task_analysis_pipeline/microdosing_faces/Pilot3_plots"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Function to process each participant
+for (participant in participant_list) {
+  subnumber <- participant$subnumber
+  gender <- participant$gender
+  age <- participant$age
+  
+  # block data
+  participant_data <- lapply(0:6, function(i) {
+    df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/data/sub", 
+                          subnumber, "_", gender, "_", age, "_block00", i, ".csv"))
+    df$Block <- paste("Block", sprintf("%03d", i), sep = "")
+    df$subnumber <- subnumber  # Add participant identifier
+    return(df)
+  })
+  participant_data <- bind_rows(participant_data)
+  
+  # final opac file
+  opac_file <- paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/data/sub", 
+                      subnumber, "_", gender, "_", age, "_final_opac.csv")
+  final_opac <- read.csv(opac_file, header = FALSE, skip = 1) # Skip the first row
+  opac_data <- data.frame(
+    Block = paste0("Block", sprintf("%03d", 0:6)),
+    Opacity = final_opac$V1
+  )
+  
+  # merge block and opacity
+  participant_data <- merge(participant_data, opac_data, by = "Block", all.x = TRUE)
+  
+# standard error for error bars
+mean_confidence <- joined_data_confidence %>%
+  group_by(Opacity, Perception_Type, Block) %>%
+  summarise(
+    Mean_Confidence = mean(Confidence, na.rm = TRUE),
+    SE = sd(Confidence, na.rm = TRUE) / sqrt(n()), # Standard Error
+    .groups = "drop"
+  )
+
+# y axis max to account for SE
+confidence_y_max <- max(mean_confidence$Mean_Confidence + mean_confidence$SE, na.rm = TRUE)
+
+# firts plot (confidence)
+confidenceplot <- ggplot(mean_confidence, aes(x = as.factor(Opacity), y = Mean_Confidence, fill = Perception_Type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.6) +
+  geom_errorbar(
+    aes(ymin = Mean_Confidence - SE, ymax = Mean_Confidence + SE),
+    position = position_dodge(width = 0.8),
+    width = 0.25
+  ) +
+  facet_wrap(
+    ~Block,
+    scales = "free",
+    labeller = as_labeller(function(x) {
+      block_number <- as.numeric(gsub("Block", "", x)) + 1
+      paste("Block", block_number)
+    })
+  ) +
+  labs(
+    title = paste0("Mean confidence ratings by opacity and perception type, subject ", subnumber),
+    x = "Opacity",
+    y = "Mean confidence rating"
+  ) +
+  scale_fill_brewer(palette = "Set2") +
+  ylim(0, confidence_y_max) +  # Adjust y-axis limit
+  labs(fill = "Perception type") + 
+  theme_minimal()
+
+max_hallucinations <- cleaned_data %>%
+  filter(Hallucination_response == 1) %>%
+  group_by(acOpity) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  summarise(Max_Hallucinations = max(Count, na.rm = TRUE)) %>%
+  pull(Max_Hallucinations)
+
+# distribution plot
+false_alarm_distribution <- cleaned_data %>%
+  filter(Hallucination_response == 1) %>%
+  ggplot(aes(x = as.factor(Opacity), y = Hallucination_confidence, fill = as.factor(Opacity))) +
+  geom_boxplot() +
+  labs(
+    title = "Distribution of confidence in false alarms by opacity level",
+    x = "Opacity",
+    y = "Confidence"
+  ) +
+  scale_y_continuous(limits = c(1, max_hallucinations)) + # Set y-axis limits based on max hallucinations
+  scale_fill_brewer(palette = "Set3") +
+  labs(fill = "Opacity") +
+  theme_minimal()
+
+# Combine the plots into a single figure
+library(ggpubr)
+final_plot <- ggarrange(
+  confidenceplot,
+  false_alarm_distribution,
+  labels = c("A", "B"),
+  ncol = 2,
+  nrow = 1
+)
+
+  output_file <- paste0(output_dir, "/", subnumber, "_confidence_plot.png")
+
+  # Save the combined plot
+  ggsave(
+    filename = output_file,
+    plot = final_plot,
+    width = 1258 / 96,  # Convert pixels to inches
+    height = 507 / 96
+  )
+  
+  cat("Plot saved for participant:", subnumber, "\n")
+}
+
+```
+
+
+Loop for confidence
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+
+# Function to process each participant
+process_participant <- function(participant) {
+  subnumber <- participant$subnumber
+  gender <- participant$gender
+  age <- participant$age
+  
+  # Load the participant's block data
+  participant_data <- lapply(0:6, function(i) {
+    df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/data/sub",
+                          subnumber, "_", gender, "_", age, "_block00", i, ".csv"))
+    df$Block <- paste("Block", sprintf("%03d", i), sep = "")
+    df$subnumber <- subnumber  # Add participant identifier
+    return(df)
+  })
+  participant_data <- bind_rows(participant_data)
+  
+  # Load the participant's final_opac file
+  opac_file <- paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/data/sub",
+                      subnumber, "_", gender, "_", age, "_final_opac.csv")
+  final_opac <- read.csv(opac_file, header = FALSE, skip = 1) # Skip the first row
+  opac_data <- data.frame(
+    Block = paste0("Block", sprintf("%03d", 0:6)),
+    Opacity = final_opac$V1
+  )
+  
+  # Merge the block data with the opacity data
+  participant_data <- merge(participant_data, opac_data, by = "Block", all.x = TRUE)
+  
+  # Clean and preprocess the data
+  cleaned_data <- participant_data %>%
+    mutate(
+      Realface_response = as.numeric(Realface_response),
+      Realface_confidence = as.numeric(Realface_confidence),
+      Hallucination_response = as.numeric(Hallucination_response),
+      Hallucination_confidence = as.numeric(Hallucination_confidence),
+      Face_Position = as.numeric(Face_Position),
+      Noise_Number = as.numeric(Noise_Number),
+      Face_Size = as.numeric(Face_Size),
+      Opacity = as.numeric(Opacity)
+    )
+  
+  # Generate perception data frames
+  missed_perceptions <- cleaned_data %>%
+    filter(Realface_response == 0) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Count = n()) %>%
+    mutate(Perception_Type = "Missed")
+  
+  correct_perceptions <- cleaned_data %>%
+    filter(Realface_response == 1) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Count = n()) %>%
+    mutate(Perception_Type = "Correct")
+  
+  false_perceptions <- cleaned_data %>%
+    filter(Hallucination_response == 1) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Count = n()) %>%
+    mutate(Perception_Type = "False")
+  
+  # Combine perception data
+  joined_data <- bind_rows(missed_perceptions, correct_perceptions, false_perceptions)
+  
+  # Total trials and proportions
+  total_trials <- cleaned_data %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(TotalTrials = n(), .groups = 'drop')
+  
+  proportions <- joined_data %>%
+    left_join(total_trials, by = c("Opacity", "subnumber", "Block")) %>%
+    mutate(Proportion = Count / TotalTrials)
+  
+  perception_y_max <- max(joined_data$Count, na.rm = TRUE)
+  
+  # Create perception plot
+  perceptionplot <- ggplot(joined_data, aes(x = as.factor(Opacity), y = Count, fill = Perception_Type)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    geom_text(data = proportions, aes(label = paste0(round(Proportion * 100, 1), "%")), 
+              position = position_dodge(width = 0.9), vjust = -0.5, size = 3) +
+    labs(
+      title = paste0("Perceptions (Correct/False/Missed) by Opacity\nSubject ", subnumber, ", ", gender, ", ", age),
+      x = "Opacity",
+      y = "Count",
+      fill = "Perception Type"
+    ) +
+    facet_wrap(~Block, scales = "free") +
+    scale_fill_brewer(palette = "Set2") +
+    ylim(0, perception_y_max) +
+    theme_minimal()
+  
+  # Generate confidence data frames with error bars
+  confidence_correct <- cleaned_data %>%
+    filter(Realface_response == 1) %>%
+    group_by(subnumber, Opacity, Block) %>%
+    summarise(Mean_Confidence = mean(Realface_confidence, na.rm = TRUE), 
+              SE = sd(Realface_confidence, na.rm = TRUE) / sqrt(n())) %>%
+    mutate(Perception_Type = "Correct")
+  
+  confidence_false <- cleaned_data %>%
+    filter(Hallucination_response == 1) %>%
+    group_by(Opacity, subnumber, Block) %>%
+    summarise(Mean_Confidence = mean(Hallucination_confidence, na.rm = TRUE), 
+              SE = sd(Hallucination_confidence, na.rm = TRUE) / sqrt(n())) %>%
+    mutate(Perception_Type = "False")
+  
+  mean_confidence <- bind_rows(confidence_correct, confidence_false)
+  
+  confidence_y_max <- max(mean_confidence$Mean_Confidence + mean_confidence$SE, na.rm = TRUE)
+  
+  # Create confidence plot
+  confidenceplot <- ggplot(mean_confidence, aes(x = as.factor(Opacity), y = Mean_Confidence, fill = Perception_Type)) +
+    geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.6) +
+    geom_errorbar(aes(ymin = Mean_Confidence - SE, ymax = Mean_Confidence + SE), 
+                  position = position_dodge(width = 0.8), width = 0.25) +
+    labs(
+      title = paste0("Mean Confidence Ratings by Opacity and Perception Type\nSubject ", subnumber, ", ", gender, ", ", age),
+      x = "Opacity",
+      y = "Mean Confidence Rating",
+      fill = "Perception Type"
+    ) +
+    facet_wrap(~Block, scales = "free") +
+    scale_fill_brewer(palette = "Set2") +
+    ylim(0, confidence_y_max) +
+    theme_minimal()
+  
+  # Save the combined plot
+  output_file <- paste0(output_dir, "/", subnumber, "_combined_plot.png")
+  ggsave(
+    filename = output_file,
+    plot = ggarrange(perceptionplot, confidenceplot, labels = c("A", "B")),
+    width = 14, height = 7
+  )
+  
+  cat("Plot saved for participant:", subnumber, "\n")
+}
+
+# Loop through all participants
+for (participant in participant_list) {
+  process_participant(participant)
+}
+
+```
+```{r}
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+
+# Define a single participant
+participant <- list(subnumber = "MN01", gender = "male", age = "24")
+
+# Load the participant's block data
+participant_data <- lapply(0:6, function(i) {
+  df <- read.csv(paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/data/sub",
+                        participant$subnumber, "_", participant$gender, "_", participant$age, "_block00", i, ".csv"))
+  df$Block <- paste("Block", sprintf("%03d", i), sep = "")
+  df$subnumber <- participant$subnumber  # Add participant identifier
+  return(df)
+})
+participant_data <- bind_rows(participant_data)
+
+# Load the participant's final_opac file
+opac_file <- paste0("~/Library/CloudStorage/GoogleDrive-oshenyan@gmail.com/My Drive/Microdosing/Face_task/data/sub",
+                    participant$subnumber, "_", participant$gender, "_", participant$age, "_final_opac.csv")
+final_opac <- read.csv(opac_file, header = FALSE, skip = 1) # Skip the first row
+opac_data <- data.frame(
+  Block = paste0("Block", sprintf("%03d", 0:6)),
+  Opacity = final_opac$V1
+)
+
+# Merge the block data with the opacity data
+participant_data <- merge(participant_data, opac_data, by = "Block", all.x = TRUE)
+
+# Clean and preprocess the data
+cleaned_data <- participant_data %>%
+  mutate(
+    Realface_response = as.numeric(Realface_response),
+    Realface_confidence = as.numeric(Realface_confidence),
+    Hallucination_response = as.numeric(Hallucination_response),
+    Hallucination_confidence = as.numeric(Hallucination_confidence),
+    Face_Position = as.numeric(Face_Position),
+    Noise_Number = as.numeric(Noise_Number),
+    Face_Size = as.numeric(Face_Size),
+    Opacity = as.numeric(Opacity)
+  )
+
+# Generate perception data frames
+missed_perceptions <- cleaned_data %>%
+  filter(Realface_response == 0) %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(Count = n()) %>%
+  mutate(Perception_Type = "Missed")
+
+correct_perceptions <- cleaned_data %>%
+  filter(Realface_response == 1) %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(Count = n()) %>%
+  mutate(Perception_Type = "Correct")
+
+false_perceptions <- cleaned_data %>%
+  filter(Hallucination_response == 1) %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(Count = n()) %>%
+  mutate(Perception_Type = "False")
+
+# Combine perception data
+joined_data <- bind_rows(missed_perceptions, correct_perceptions, false_perceptions)
+
+# Total trials and proportions
+total_trials <- cleaned_data %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(TotalTrials = n(), .groups = 'drop')
+
+# Calculate proportions for each perception type
+proportions <- joined_data %>%
+  left_join(total_trials, by = c("Opacity", "subnumber", "Block")) %>%
+  mutate(Proportion = Count / TotalTrials)
+
+# Plot: Perception
+perceptionplot <- ggplot(joined_data, aes(x = as.factor(Opacity), y = Count, fill = Perception_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_text(data = proportions, aes(label = paste0(round(Proportion * 100, 1), "%")), 
+            position = position_dodge(width = 0.9), vjust = -0.5, size = 3) +
+  labs(
+    title = paste0("Perceptions (Correct/False/Missed) by Opacity\nSubject ", 
+                   participant$subnumber, ", ", participant$gender, ", ", participant$age),
+    x = "Opacity",
+    y = "Count",
+    fill = "Perception Type"
+  ) +
+  facet_wrap(~Block, scales = "free") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal()
+
+# Generate confidence data frames with error bars
+confidence_correct <- cleaned_data %>%
+  filter(Realface_response == 1) %>%
+  group_by(subnumber, Opacity, Block) %>%
+  summarise(Mean_Confidence = mean(Realface_confidence, na.rm = TRUE), 
+            SE = sd(Realface_confidence, na.rm = TRUE) / sqrt(n())) %>%
+  mutate(Perception_Type = "Correct")
+
+confidence_false <- cleaned_data %>%
+  filter(Hallucination_response == 1) %>%
+  group_by(Opacity, subnumber, Block) %>%
+  summarise(Mean_Confidence = mean(Hallucination_confidence, na.rm = TRUE), 
+            SE = sd(Hallucination_confidence, na.rm = TRUE) / sqrt(n())) %>%
+  mutate(Perception_Type = "False")
+
+mean_confidence <- bind_rows(confidence_correct, confidence_false)
+
+# Plot: Confidence
+confidenceplot <- ggplot(mean_confidence, aes(x = as.factor(Opacity), y = Mean_Confidence, fill = Perception_Type)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.6) +
+  geom_errorbar(aes(ymin = Mean_Confidence - SE, ymax = Mean_Confidence + SE), 
+                position = position_dodge(width = 0.8), width = 0.25) +
+  labs(
+    title = paste0("Mean Confidence Ratings by Opacity and Perception Type\nSubject ", 
+                   participant$subnumber, ", ", participant$gender, ", ", participant$age),
+    x = "Opacity",
+    y = "Mean Confidence Rating",
+    fill = "Perception Type"
+  ) +
+  facet_wrap(~Block, scales = "free") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal()
+
+perceptionplot
+
+```
+
+# Trial length
+
+```{r}
+# Load necessary library
+library(MASS)
+
+# Assuming your dataset is called combined_data
+# Calculate the response times (time after onset)
+combined_data$response_time <- combined_data$RealFace_Image_Response_Time - combined_data$Realface_Image_Onset_Time
+
+# Filter response times between 4 and 5 seconds
+filtered_response_times <- combined_data %>%
+  filter(Realface_response == 1) %>%
+  mutate(Detection_Time =  RealFace_Image_Response_Time - Realface_Image_Onset_Time)
+
+# Plot the histogram of response times
+hist(filtered_response_times$Detection_Time,  
+     main = "Histogram of response times from face onset to response",
+     xlab = "Response time (seconds)",  
+     breaks = 20,  
+     col = "skyblue",  
+     border = "black", 
+     probability = TRUE)  # Use probability density instead of counts
+
+# Add a density curve (kernel density estimate)
+lines(density(filtered_response_times$Detection_Time), 
+      col = "red", 
+      lwd = 2)  # Red curve with thickness of 2
+
+# Fit a Gamma distribution to the filtered response times
+fit <- fitdistr(filtered_response_times$Detection_Time, "gamma")
+
+# Print the estimated parameters (shape and rate)
+print(fit$estimate)
+
+# Compute the 95th percentile from the Gamma distribution
+percentile_95 <- qgamma(0.95, shape = fit$estimate[1], rate = fit$estimate[2])
+
+# Print the 95th percentile
+print(paste("95th percentile:", percentile_95))
+
+```
+#Boot strapping to find psychometric function
+
