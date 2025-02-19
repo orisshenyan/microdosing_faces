@@ -313,6 +313,11 @@ output_file <- paste0("Pilot4_plots/Individual/", subnumber, "_mainperceptions_p
 
 ```
 
+```{r}
+perception_plot
+```
+
+
 
 # Confidence plot - use this
 
