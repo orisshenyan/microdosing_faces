@@ -82,7 +82,7 @@ if (!dir.exists(plot_dir)) {
 }
 
 # save plot with 
-pdf(file.path(plot_dir, paste0("SDT_plot_pilot_sub", perp_numb, ".pdf")), 
+pdf(file.path(plot_dir, paste0("SDT_plot_pilot_sub", perp_numb, ".png")), 
     width = 5, height = 3)
 
 par(cex=0.9, mar=c(4, 4, 1, 1) )
