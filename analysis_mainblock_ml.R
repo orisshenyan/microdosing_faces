@@ -12,7 +12,8 @@ read_with_block <- function(file) {
 }
 
 # load data
-data_path <- "./Pilot_data/"
+perp_numb <- '4MP'
+data_path <- paste0("./Pilot_data/sub", perp_numb)
 file_paths <- list.files(data_path, pattern = "mainblock", full.names = TRUE)
 d <- map_dfr(file_paths, read_with_block)
 d$block_number <- as.numeric(d$block_number)
@@ -71,7 +72,17 @@ fS <- alpha*dnorm(supp_x, mean=d_prime, sd=sigma)
 fN <- (1-alpha)*dnorm(supp_x, mean=0, sd=sigma)
 
 # plot 
-pdf("SDT_plot_pilot.pdf", width=5, height=3)
+
+# create directory for plot
+plot_dir <- file.path("Pilot4_plots", perp_numb)
+if (!dir.exists(plot_dir)) {
+  dir.create(plot_dir, recursive = TRUE)
+}
+
+# save plot with 
+pdf(file.path(plot_dir, paste0("SDT_plot_pilot_sub", perp_numb, ".png")), 
+    width = 5, height = 3)
+
 par(cex=0.9, mar=c(4, 4, 1, 1) )
 plot(supp_x, fS, type="l",lwd=3,col="black",xlab="X",ylab="p(X)", ylim=c(0, max(c(fS,fN))))
 lines(supp_x, fN, lwd=3,col="dark grey")

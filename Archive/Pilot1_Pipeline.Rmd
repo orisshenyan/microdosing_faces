@@ -1,0 +1,316 @@
+---
+title: "Faces_Piloting_V2"
+author: "Oris Shenyan"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(binom)
+library(ggpubr)
+```
+
+
+
+```{r}
+#Set up
+subnumber <- '4C' #options are 030, 035, 4C
+gender <- 'female' #options are male, female, female 
+age <- '28' #options are 26, 18, 28
+```
+
+```{r}
+folder_path <- "Pilot1_output/Individual"
+
+#create folder if it doesn't exist
+if (!dir.exists(folder_path)) {
+  dir.create(folder_path, recursive = TRUE)
+}
+```
+
+```{r}
+folder_path <- "Pilot1_output/Group"
+
+#create folder if it doesn't exist
+if (!dir.exists(folder_path)) {
+  dir.create(folder_path, recursive = TRUE)
+}
+```
+
+
+```{r}
+# Step 1: Read CSV files and add a 'Block' column
+data_list <- lapply(0:6, function(i) {
+  # Read each CSV file
+  df <- read.csv(paste0("data/sub", subnumber, "_", gender, "_", age, "_training2block00", i, ".csv"))
+  # Add a 'Block' column based on the file name
+  df$Block <- paste("Block", i, sep="")
+  return(df)
+})
+
+# Combine all data frames into one
+combined_data <- bind_rows(data_list)
+```
+## Opacity vs proportion of faces identified
+```{r}
+summarised_data <- combined_data %>%
+  group_by(Opacity) %>%
+  summarise(Proportion_Identified = sum(Realface_response) / n())
+```
+
+```{r}
+model <- glm(Realface_response ~ Opacity, family = binomial, data = combined_data)
+
+# Extract model coefficients
+beta_0 <- coef(model)[1]
+beta_1 <- coef(model)[2]
+
+inflection_point <- -beta_0 / beta_1
+```
+
+
+```{r}
+# Plot
+plot <- ggplot(summarised_data, aes(x = Opacity, y = Proportion_Identified)) +
+  geom_point(alpha = 0.7, size = 2) +
+  stat_smooth(method = "glm", method.args = list(family = "binomial"), se = FALSE, color = "blue") +
+  geom_vline(xintercept = inflection_point, linetype = "dashed", color = "red") +
+  annotate("text", x = inflection_point, y = 0.5, label = paste("Threshold:", round(inflection_point, 2)), hjust = -0.2, vjust = -0.5, color = "red") +
+  theme_minimal() +
+  labs(title = paste0("Participant ", subnumber, " (",gender,', ',age,"): ", "Proportion of faces perceived vs opacity of faces"),
+       x = "Opacity level",
+       y = "Proportion of faces identified",
+       subtitle = "Inflection point (sensory threshold) marked by red dashed line")
+plot
+ggsave(filename = paste0("Pilot1_output/Individual/opacityplot_training2_", subnumber, "_", age, "_", gender, ".png"), plot = plot, device = "png")
+
+```
+
+
+## Confidence
+```{r}
+# Assuming combined_data is already for a specific individual
+# Aggregate data to get counts of each confidence level for each opacity
+bar_data <- combined_data %>%
+  filter(Realface_response == 1) %>%
+  group_by(Opacity, Realface_confidence) %>%
+  summarise(Count = n(), .groups = 'drop')
+
+# Stacked bar chart for the individual participant
+bar_plot <- ggplot(bar_data, aes(x = factor(Opacity), y = Count, fill = factor(Realface_confidence))) +
+  geom_bar(stat = "identity") +
+  scale_fill_viridis_d(option = "plasma", name = "Confidence Level") +
+  labs(title = paste0("Participant ", subnumber, " (", gender, ', ', age, "): ",
+                      "Confidence Across Opacity Levels"),
+       x = "Opacity",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Save the plot
+ggsave(filename = paste0("Pilot1_output/Individual/stacked_bar_confidence_", subnumber, "_", age, "_", gender, ".png"), plot = bar_plot, device = "png")
+bar_plot
+
+
+
+```
+## Direction
+
+```{r}
+
+direction_df <- filtered_data_confidence %>%
+  mutate(Face_Position_Clean = as.numeric(trimws(as.character(Face_Position)))) %>% 
+  mutate(Correct_Direction = ifelse(
+    ((Direction == 'right' & Face_Position_Clean %in% c(5, 7)) | 
+     (Direction == 'left' & Face_Position_Clean %in% c(-5, -7))),
+    1, 
+    0
+  )) 
+```
+
+
+```{r}
+direction_df_summary <- direction_df %>%
+  group_by(Opacity) %>%
+  summarise(Proportion_Correct = sum(Correct_Direction) / n())
+```
+
+```{r}
+plot2 <- ggplot(direction_df_summary, aes(x = Opacity, y = Proportion_Correct)) +
+  geom_line() +  # Line plot
+  geom_point() +  # Add points
+  labs(title = paste0("Participant ", subnumber, " (",gender,', ',age,"): ", "Accuracy of identifying direction of faces by opacity"),
+       x = "Opacity",
+       y = "Accuracy") +
+      geom_vline(xintercept = inflection_point, linetype = "dashed", color = "red") +
+  annotate("text", x = inflection_point, y = 0.5, label = paste("Threshold:", round(inflection_point, 2)), hjust = -0.2, vjust = -35, color = "red") +
+  labs(title = paste0("Participant ", subnumber, " (",gender,', ',age,"): ", "Accuracy of identifying direction of faces by opacity"),
+       x = "Opacity",
+       y = "Accuracy") +
+  scale_x_continuous(breaks = seq(from = min(direction_df_summary$Opacity), to = max(direction_df_summary$Opacity), by = 0.1)) +
+  theme_minimal()
+
+plot2
+
+ggsave(filename = paste0("Pilot1_output/Individual/directionplot_training2_", subnumber, "_", age, "_", gender, ".png"), plot = plot2, device = "png")
+```
+
+# Group analysis
+
+#import data
+```{r}
+# Set up list of participants
+participant_list <- list(
+  list(subnumber = '030', gender = 'male', age = '26'),
+  list(subnumber = '035', gender = 'female', age = '18'),
+  list(subnumber = '4C', gender = 'female', age = '28')
+)
+
+data_list <- list()
+
+# Loop through participants to load data
+for (participant in participant_list) {
+  subnumber <- participant$subnumber
+  gender <- participant$gender
+  age <- participant$age
+  
+  participant_data <- lapply(0:6, function(i) {
+    df <- read.csv(paste0("data/sub", subnumber, "_", gender, "_", age, "_training2block00", i, ".csv"))
+    df$Block <- paste("Block", i, sep="")
+    df$subnumber <- subnumber
+    return(df)
+  })
+  
+  # Add participant data to main list
+  data_list <- c(data_list, participant_data)
+}
+
+# Combine all participant data into one data frame
+combined_data <- bind_rows(data_list)
+
+```
+
+## Group-Level Opacity vs Proportion Identified:
+```{r}
+# Individual and group-level summarisation
+individual_data <- combined_data %>%
+  group_by(subnumber, Opacity) %>%
+  summarise(Proportion_Identified = sum(Realface_response) / n(), .groups = 'drop')
+
+group_data <- combined_data %>%
+  group_by(Opacity) %>%
+  summarise(Proportion_Identified = sum(Realface_response) / n())
+
+# Fit a logistic regression model to the group data
+model <- glm(Realface_response ~ Opacity, family = binomial, data = combined_data)
+beta_0 <- coef(model)[1]
+beta_1 <- coef(model)[2]
+inflection_point <- -beta_0 / beta_1
+
+# Plot: Individual + Group
+plot <- ggplot() +
+  geom_line(data = individual_data, aes(x = Opacity, y = Proportion_Identified, color = subnumber, group = subnumber), alpha = 0.5) +
+  geom_point(data = group_data, aes(x = Opacity, y = Proportion_Identified), size = 2, color = "black") +
+  stat_smooth(data = group_data, aes(x = Opacity, y = Proportion_Identified), method = "glm", method.args = list(family = "binomial"), se = FALSE, color = "blue") +
+  geom_vline(xintercept = inflection_point, linetype = "dashed", color = "red") +
+  annotate("text", x = inflection_point, y = 0.5, label = paste("Threshold:", round(inflection_point, 2)), hjust = -0.2, vjust = -0.5, color = "red") +
+  theme_minimal() +
+  labs(title = "Individual and Group-Level: Proportion of faces perceived vs opacity",
+       x = "Opacity level",
+       y = "Proportion of faces identified",
+       subtitle = "Group trend marked by blue line, individual participants in color")
+
+ggsave(filename = "Pilot1_output/Group/opacityplot_combined.png", plot = plot, device = "png")
+plot
+
+```
+
+## Group confidence
+```{r}
+# Create individual data and group data separately
+# Individual Data Aggregation
+individual_bar_data <- combined_data %>%
+  filter(Realface_response == 1) %>%
+  group_by(Opacity, Realface_confidence, subnumber) %>%
+  summarise(Count = n(), .groups = 'drop')
+
+# Group-Level Data Aggregation
+group_bar_data <- combined_data %>%
+  filter(Realface_response == 1) %>%
+  group_by(Opacity, Realface_confidence) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  mutate(subnumber = "Group")  # Add a placeholder for faceting
+
+# Combine individual and group data
+combined_bar_data <- bind_rows(individual_bar_data, group_bar_data)
+
+# Side-by-Side and Stacked Bar Plot using Faceting
+combined_bar_plot <- ggplot(combined_bar_data, aes(x = factor(Opacity), y = Count, fill = factor(Realface_confidence))) +
+  geom_bar(stat = "identity", position = "stack") + 
+  facet_wrap(~subnumber, scales = "free_y", nrow = 2) +  # Facet by participant and group
+  scale_fill_viridis_d(option = "plasma", name = "Confidence Level") +
+  labs(title = "Bar Chart: Confidence Across Opacity Levels (Individual vs Group)",
+       x = "Opacity",
+       y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Save the plot
+ggsave(filename = "Pilot1_output/Group/barplot_combined_confidence_opacity.png", plot = combined_bar_plot, device = "png")
+combined_bar_plot
+
+
+```
+
+## Group direction
+```{r}
+# Assuming combined_data contains data for all participants
+# Calculate correct direction for individual and group-level analysis
+
+# Individual Data Aggregation
+individual_direction <- combined_data %>%
+  filter(Realface_response == 1) %>%
+  mutate(Face_Position_Clean = as.numeric(trimws(as.character(Face_Position)))) %>%
+  mutate(Correct_Direction = ifelse(
+    ((Direction == 'right' & Face_Position_Clean %in% c(5, 7)) | 
+     (Direction == 'left' & Face_Position_Clean %in% c(-5, -7))),
+    1,
+    0
+  )) %>%
+  group_by(subnumber, Opacity) %>%
+  summarise(Proportion_Correct = sum(Correct_Direction) / n(), .groups = 'drop')
+
+# Group-Level Data Aggregation
+group_direction <- combined_data %>%
+  filter(Realface_response == 1) %>%
+  mutate(Face_Position_Clean = as.numeric(trimws(as.character(Face_Position)))) %>%
+  mutate(Correct_Direction = ifelse(
+    ((Direction == 'right' & Face_Position_Clean %in% c(5, 7)) | 
+     (Direction == 'left' & Face_Position_Clean %in% c(-5, -7))),
+    1,
+    0
+  )) %>%
+  group_by(Opacity) %>%
+  summarise(Proportion_Correct = sum(Correct_Direction) / n())
+
+# Plot: Individual + Group
+plot2 <- ggplot() +
+  geom_line(data = individual_direction, aes(x = Opacity, y = Proportion_Correct, color = subnumber, group = subnumber), alpha = 0.5) +
+  geom_point(data = group_direction, aes(x = Opacity, y = Proportion_Correct), size = 2, color = "black") +
+  geom_line(data = group_direction, aes(x = Opacity, y = Proportion_Correct), color = "blue", size = 1) +
+  geom_vline(xintercept = inflection_point, linetype = "dashed", color = "red") +
+  annotate("text", x = inflection_point, y = 0.5, label = paste("Threshold:", round(inflection_point, 2)), hjust = -0.2, vjust = -35, color = "red") +
+  theme_minimal() +
+  labs(title = "Individual and Group-Level: Accuracy of Identifying Direction by Opacity",
+       x = "Opacity",
+       y = "Accuracy",
+       subtitle = "Group trend marked by blue line, individual participants in color")
+
+# Save the combined plot
+ggsave(filename = "Pilot1_output/Group/directionplot_combined.png", plot = plot2, device = "png")
+plot2
+
+```
+
+
